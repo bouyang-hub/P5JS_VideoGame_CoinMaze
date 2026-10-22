@@ -1,7 +1,7 @@
 /*
  * COIN MAZE / 中期作业 / p5.js 2.3.4
  * 直接把这个文件全部复制到 p5.js 编辑器的 sketch.js 即可运行。
- * 无图片、字体或音频素材依赖。UI 样式也在本文件中。
+ * 将 dark_place.mp3 上传到 sketch.js 同一级。UI 样式也在本文件中。
  * WASD / 方向键移动；鼠标照明；P 暂停；M 静音；R 重新开始。
  * 声音替换位置：文件末尾的 Sound 类。
  */
@@ -17,6 +17,8 @@ const SETTINGS = {
   beamLength: 245,         // 手电长度
   beamHalfAngle: 0.63,     // 手电半角，弧度
   firstCoins: 6,
+  musicFile: 'dark_place.mp3', // 与左侧上传的完整音频文件名保持一致
+  musicVolume: 0.18,       // 背景音乐音量：0～1
   maxMonsters: 5,          // 第一关 1 只，每过一关 +1，最多 5 只
   monsterStepSeconds: 0.48, // 第一关怪兽移动一格的时间
   monsterSpeedGrowth: 0.90, // 每升一关，移动时间缩短 10%
@@ -68,11 +70,15 @@ function setup() {
   newLevel();
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && phase === 'playing') pauseGame();
+    if (document.hidden) sound.pauseMusic();
+    else sound.playMusic();
   });
   window.addEventListener('blur', () => {
     touchDirection = null;
     if (phase === 'playing') pauseGame();
+    else sound.pauseMusic();
   });
+  window.addEventListener('focus', () => sound.playMusic());
 }
 
 // ---------- 2. 随机迷宫：深度优先生成 + 少量环路 ----------
@@ -341,6 +347,7 @@ function die() {
   if (phase !== 'playing') return;
   phase = 'dead';
   touchDirection = null;
+  sound.pauseMusic(true);
   sound.death();
   ui.toast.classList.remove('visible');
   ui.state.hidden = false;
@@ -611,6 +618,7 @@ async function startGame() {
   if (phase !== 'intro' && phase !== 'paused') return;
   await sound.unlock();
   phase = 'playing';
+  sound.playMusic();
   ui.state.hidden = true;
   ui.overlay.classList.add('hidden');
   ui.root.classList.remove('menu-open');
@@ -619,6 +627,7 @@ async function startGame() {
 function pauseGame() {
   if (phase === 'playing') {
     phase = 'paused';
+    sound.pauseMusic();
     ui.state.hidden = true;
     ui.start.textContent = 'Continue exploring';
     ui.overlay.classList.remove('hidden');
@@ -626,6 +635,7 @@ function pauseGame() {
   } else if (phase === 'paused') startGame();
 }
 function restartGame() {
+  sound.pauseMusic(true);
   phase = 'intro';
   touchDirection = null;
   level = 1; totalCoins = 0; elapsed = 0; lastBump = -1;
@@ -647,8 +657,9 @@ function mouseMoved() { if (phase === 'playing') pointerAim = true; }
 function mouseDragged() { if (phase === 'playing') pointerAim = true; }
 function windowResized() { resizeCanvas(windowWidth, windowHeight); }
 function toggleSound() {
-  sound.muted = !sound.muted;
+  sound.setMuted(!sound.muted);
   sound.unlock();
+  sound.playMusic();
   ui.sound.textContent = sound.muted ? 'Sound off' : 'Sound on';
   ui.sound.setAttribute('aria-pressed', String(!sound.muted));
 }
@@ -716,11 +727,53 @@ function createInterface() {
   }
 }
 
-// ---------- 7. 临时合成音效 / 之后集中在这里替换 ----------
-// 使用浏览器 Web Audio，无需 p5.sound 插件。
+// ---------- 7. 循环背景音乐 + 合成音效 ----------
+// 背景音使用原生 Audio，音效使用 Web Audio，无需 p5.sound 插件。
 // 换素材时保留 step / bump / coin / complete / death 方法名即可。
 class Sound {
-  constructor() { this.ctx = null; this.muted = false; }
+  constructor() {
+    this.ctx = null;
+    this.muted = false;
+    this.bgm = new window.Audio(SETTINGS.musicFile);
+    this.bgm.loop = true;
+    this.bgm.preload = 'auto';
+    this.bgm.volume = SETTINGS.musicVolume;
+    this.musicPending = false;
+    this.musicWanted = false;
+    this.musicErrorReported = false;
+    this.bgm.addEventListener('error', () => this.reportMusicError());
+  }
+  reportMusicError(error) {
+    if (this.musicErrorReported) return;
+    this.musicErrorReported = true;
+    console.warn(`背景音乐未能加载或播放。请把 ${SETTINGS.musicFile} 放在 sketch.js 同一级；游戏和其他音效仍可使用。`, error || '');
+  }
+  playMusic() {
+    // 开始页、暂停和死亡时不播放；过关时连续播放，不从头叠加。
+    if (document.hidden || (phase !== 'playing' && phase !== 'cleared')) return;
+    this.musicWanted = true;
+    if (!this.bgm.paused || this.musicPending || this.bgm.error) return;
+    this.bgm.muted = this.muted;
+    this.musicPending = true;
+    let interrupted = false;
+    this.bgm.play().catch(error => {
+      // 暂停或重开可以取消尚未完成的播放请求，这是正常行为。
+      interrupted = error.name === 'AbortError';
+      if (!interrupted) this.reportMusicError(error);
+    }).finally(() => {
+      this.musicPending = false;
+      if (interrupted && this.musicWanted) this.playMusic();
+    });
+  }
+  pauseMusic(reset = false) {
+    this.musicWanted = false;
+    this.bgm.pause();
+    if (reset) this.bgm.currentTime = 0;
+  }
+  setMuted(value) {
+    this.muted = value;
+    this.bgm.muted = value;
+  }
   async unlock() {
     try {
       const Audio = window.AudioContext || window.webkitAudioContext;
